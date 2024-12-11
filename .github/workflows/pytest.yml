@@ -20,17 +20,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        id: dependencies
-        with:
-          key: ${{ runner.os }}-python-${{ matrix.python-version }}-dependencies-${{ hashFiles('pyproject.toml') }}
-          paths:
-            - ~/.cache/pip/
-
-      - name: Check Cache Hit
-        run: echo "${{ steps.dependencies.outputs.cache-hit }}" > cache_hit
-
       - name: Install dependencies if cache missed
         if: steps.dependencies.outputs.cache-hit != 'true'
         run: |
