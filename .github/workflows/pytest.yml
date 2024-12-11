@@ -1,0 +1,39 @@
+name: Pytest for Dingo-GW on Python 3.10
+
+on:
+  push:
+    branches:
+      - main # Trigger on push to main branch, adjust as needed
+  pull_request:
+    branches:
+      - main # Trigger on PR to main branch, adjust as needed
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v3
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          # Upgrade pip to ensure we have the latest package installer
+          python -m pip install --upgrade pip
+          # Install the package in editable mode with development dependencies
+          pip install --editable .[dev]
+
+      - name: Run Pytest
+        run: |
+          # Execute pytest with a report to identify slow tests
+          pytest --junit-xml=pytest-report.xml --cov=dingo tests/
+
+      - name: Upload Pytest Report (Optional but recommended for detailed insights)
+        uses: actions/upload-artifact@v3
+        with:
+          name: pytest-report.xml
+          path: pytest-report.xml
