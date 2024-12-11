@@ -24,7 +24,7 @@ jobs:
         uses: actions/cache@v3
         id: dependencies
         with:
-          key: ${{ runner.os }}-dependencies-${{ hashFiles('pyproject.toml') }}
+          key: ${{ runner.os }}-python-${{ matrix.python-version }}-dependencies-${{ hashFiles('pyproject.toml') }}
           paths:
             - ~/.cache/pip/
 
@@ -32,20 +32,18 @@ jobs:
         run: echo "${{ steps.dependencies.outputs.cache-hit }}" > cache_hit
 
       - name: Install dependencies if cache missed
-        if: read -r cache_hit < cache_hit; [ -z "$cache_hit" ]
+        if: steps.dependencies.outputs.cache-hit != 'true'
         run: |
+          pip install --upgrade pip
           pip install --editable .[dev]
-
-      - name: Install pip upgrade (always run)
-        run: |
-          python -m pip install --upgrade pip
 
       - name: Run Pytest
         run: |
-          pytest --junit-xml=pytest-report.xml --cov=dingo tests/
+          pytest --junit-xml=pytest-report.xml tests/
 
       - name: Upload Pytest Report
         uses: actions/upload-artifact@v3
         with:
           name: pytest-report.xml
           path: pytest-report.xml
+          retention-days: 30
