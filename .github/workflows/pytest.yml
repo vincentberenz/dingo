@@ -26,7 +26,7 @@ jobs:
         with:
           key: ${{ runner.os }}-dependencies-${{ hashFiles('pyproject.toml') }}
           paths:
-            - ~/.cache/pip
+            - ~/.cache/pip/
 
       - name: Install dependencies
         run: |
@@ -37,7 +37,7 @@ jobs:
 
       - name: Run Pytest
         run: |
-          pytest --junit-xml=pytest-report.xml tests/
+          pytest --junit-xml=pytest-report.xml --cov=dingo tests/
 
       - name: Upload Pytest Report
         uses: actions/upload-artifact@v3
