@@ -3,10 +3,10 @@ name: Pytest for Dingo-GW on Python 3.10
 on:
   push:
     branches:
-      - main 
+      - main
   pull_request:
     branches:
-      - main 
+      - main
 
 jobs:
   pytest:
@@ -20,16 +20,26 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        id: dependencies
+        with:
+          key: ${{ runner.os }}-dependencies-${{ hashFiles('pyproject.toml') }}
+          paths:
+            - ~/.cache/pip
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --editable .[dev]
+          if [ -z "${{ steps.dependencies.outputs.cache-hit }}" ]; then
+            pip install --editable .[dev]
+          fi
 
       - name: Run Pytest
         run: |
           pytest --junit-xml=pytest-report.xml tests/
 
-      - name: Upload Pytest Report (Optional but recommended for detailed insights)
+      - name: Upload Pytest Report
         uses: actions/upload-artifact@v3
         with:
           name: pytest-report.xml
