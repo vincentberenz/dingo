@@ -28,12 +28,17 @@ jobs:
           paths:
             - ~/.cache/pip/
 
-      - name: Install dependencies
+      - name: Check Cache Hit
+        run: echo "${{ steps.dependencies.outputs.cache-hit }}" > cache_hit
+
+      - name: Install dependencies if cache missed
+        if: read -r cache_hit < cache_hit; [ -z "$cache_hit" ]
+        run: |
+          pip install --editable .[dev]
+
+      - name: Install pip upgrade (always run)
         run: |
           python -m pip install --upgrade pip
-          if [ -z "${{ steps.dependencies.outputs.cache-hit }}" ]; then
-            pip install --editable .[dev]
-          fi
 
       - name: Run Pytest
         run: |
