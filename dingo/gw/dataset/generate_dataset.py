@@ -1,26 +1,41 @@
+import argparse
 import copy
 import textwrap
-import yaml
-import argparse
+from dataclasses import dataclass
 from multiprocessing import Pool
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
-from typing import Tuple, Dict
+import yaml
+from bilby.gw.prior import BBHPriorDict
 from threadpoolctl import threadpool_limits
 from torchvision.transforms import Compose
-from bilby.gw.prior import BBHPriorDict
 
 from dingo.gw.dataset.waveform_dataset import WaveformDataset
-from dingo.gw.prior import build_prior_with_defaults
 from dingo.gw.domains import build_domain
+from dingo.gw.prior import build_prior_with_defaults
+from dingo.gw.SVD import ApplySVD, SVDBasis
 from dingo.gw.transforms import WhitenFixedASD
 from dingo.gw.waveform_generator import (
-    WaveformGenerator,
     NewInterfaceWaveformGenerator,
+    WaveformGenerator,
     generate_waveforms_parallel,
 )
-from dingo.gw.SVD import SVDBasis, ApplySVD
+
+
+@dataclass
+class DomainConfig:
+    type: str
+    f_min: float
+    f_max: float
+    delta_f: float
+
+    def __post_init__(self):
+        if self.f_min >= self.f_max:
+            raise ValueError(
+                f"domain configuration: {f_min} should be smaller than {f_max}"
+            )
 
 
 def generate_parameters_and_polarizations(
@@ -136,7 +151,7 @@ def train_svd_basis(dataset: WaveformDataset, size: int, n_train: int):
     return basis, n_train, n_test
 
 
-def generate_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
+def generate_waveform_dataset(settings: Dict, num_processes: int) -> WaveformDataset:
     """
     Generate a waveform dataset.
 

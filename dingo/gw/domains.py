@@ -1,10 +1,11 @@
-from typing import Dict
-
-from functools import lru_cache
 from abc import ABC, abstractmethod
+from enum import Enum
+from functools import cached_property, lru_cache
+from typing import Optional, override
 
 import numpy as np
 import torch
+from multipledispatch import dispatch
 
 from dingo.gw.gwutils import *
 
@@ -19,21 +20,29 @@ class Domain(ABC):
     @abstractmethod
     def __len__(self):
         """Number of bins or points in the domain"""
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain  of Domain must implement __len__ method."
+        )
 
     @abstractmethod
     def __call__(self, *args, **kwargs) -> np.ndarray:
         """Array of bins in the domain"""
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement __call__ method."
+        )
 
     @abstractmethod
-    def update(self, new_settings: dict):
-        pass
+    def update(self, *args):
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement update method."
+        )
 
     @abstractmethod
     def time_translate_data(self, data, dt) -> np.ndarray:
         """Time translate strain data by dt seconds."""
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement time_translate_data method."
+        )
 
     @property
     @abstractmethod
@@ -41,46 +50,89 @@ class Domain(ABC):
         """Standard deviation of the whitened noise distribution"""
         # FIXME: For this to make sense, it assumes knowledge about how the domain is used in conjunction
         #  with (waveform) data, whitening and adding noise. Is this the best place to define this?
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement noise_std property."
+        )
 
     @property
     @abstractmethod
     def sampling_rate(self) -> float:
         """The sampling rate of the data [Hz]."""
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement sampling_rate property."
+        )
 
     @property
     @abstractmethod
     def f_max(self) -> float:
         """The maximum frequency [Hz] is set to half the sampling rate."""
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement f_max property."
+        )
 
     @property
     @abstractmethod
     def duration(self) -> float:
         """Waveform duration in seconds."""
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement duration property."
+        )
 
     @property
     @abstractmethod
     def min_idx(self) -> int:
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement min_idx property."
+        )
 
     @property
     @abstractmethod
     def max_idx(self) -> int:
-        pass
+        raise NotImplementedError(
+            "Subclasses  of Domain must implement max_idx property."
+        )
 
-    @property
-    @abstractmethod
-    def domain_dict(self):
-        """Enables to rebuild the domain via calling build_domain(domain_dict)."""
-        pass
 
-    def __eq__(self, other):
-        if self.domain_dict == other.domain_dict:
-            return True
-        else:
-            return False
+class _SampleFrequencies:
+
+    def __init__(self, f_min: float, f_max: float, delta_f: float) -> None:
+        self._len = int(f_max / delta_f) + 1
+        self._f_min = f_min
+        self._f_max = f_max
+        self._sample_frequencies = np.linspace(
+            0.0, f_max, num=self._len, endpoint=True, dtype=np.float32
+        )
+
+    def get(self):
+        return self._sample_frequencies
+
+    def __len__(self) -> int:
+        return self._len
+
+    @cached_property
+    def frequency_mask(self):
+        return self._sample_frequencies > self._f_min
+
+    @cached_property
+    def _sample_frequency_torch(self):
+        return torch.linspace(
+            0.0, self.f_max, steps=len(self), dtype=torch.float32
+        )
+
+    @cached_property
+    def _sample_frequency_torch_cuda(self):
+        return self._sample_frequencies_torch.to("cuda")
+
+
+def _reset_sf(func):
+    @wraps(func)
+    def wrapper(instance, value):
+        func(instance, value)
+        self._sample_frequences = _SampleFrequencies(
+            instance._f_max, instance._delta_f
+        )
+
+    return wrapper
 
 
 class FrequencyDomain(Domain):
@@ -95,72 +147,217 @@ class FrequencyDomain(Domain):
     """
 
     def __init__(
-        self, f_min: float, f_max: float, delta_f: float, window_factor: float = None
+        self,
+        f_min: float,
+        f_max: float,
+        delta_f: float,
+        window_factor: Optional[float] = None,
     ):
         self._f_min = f_min
         self._f_max = f_max
         self._delta_f = delta_f
         self._window_factor = window_factor
 
-        self._sample_frequencies = None
-        self._sample_frequencies_torch = None
-        self._sample_frequencies_torch_cuda = None
-        self._frequency_mask = None
+        self._sample_frequences = _SampleFrequencies(f_max, delta_f)
+        # self._sample_frequencies = None
+        # self._sample_frequencies_torch = None
+        # self._sample_frequencies_torch_cuda = None
+        # self._frequency_mask = None
 
-    def update(self, new_settings: dict):
+    @override
+    def update(
+        self,
+        f_min: Optional[float],
+        f_max: Optional[float],
+    ) -> None:
         """
-        Update the domain with new settings. This is only allowed if the new settings
-        are "compatible" with the old ones. E.g., f_min should be larger than the
-        existing f_min.
+        Update the domain range.
+        Both values must be in the original domain interval.
+        None values have no effect on the interval.
 
         Parameters
         ----------
-        new_settings : dict
-            Settings dictionary. Must contain a subset of the keys contained in
-            domain_dict.
-        """
-        new_settings = new_settings.copy()
-        if "type" in new_settings and new_settings.pop("type") not in [
-            "FrequencyDomain",
-            "FD",
-        ]:
-            raise ValueError("Cannot update domain to type other than FrequencyDomain.")
-        for k, v in new_settings.items():
-            if k not in ["f_min", "f_max", "delta_f", "window_factor"]:
-                raise KeyError(f"Invalid key for domain update: {k}.")
-            if k == "window_factor" and v != self._window_factor:
-                raise ValueError("Cannot update window_factor.")
-            if k == "delta_f" and v != self._delta_f:
-                raise ValueError("Cannot update delta_f.")
-        self.set_new_range(
-            f_min=new_settings.get("f_min", None), f_max=new_settings.get("f_max", None)
-        )
+        f_min
+          new minimum value. Must be in the original domain interval.
+        f_max
+          new minimum value.
 
-    def set_new_range(self, f_min: float = None, f_max: float = None):
-        """
-        Set a new range [f_min, f_max] for the domain. This is only allowed if the new
-        range is contained within the old one.
-        """
-        if f_min is not None and f_max is not None and f_min >= f_max:
-            raise ValueError("f_min must not be larger than f_max.")
-        if f_min is not None:
-            if self.f_min <= f_min <= self.f_max:
-                self.f_min = f_min
-            else:
-                raise ValueError(
-                    f"f_min = {f_min} is not in expected range "
-                    f"[{self.f_min,self.f_max}]."
-                )
-        if f_max is not None:
-            if self.f_min <= f_max <= self.f_max:
-                self.f_max = f_max
-            else:
-                raise ValueError(
-                    f"f_max = {f_max} is not in expected range "
-                    f"[{self.f_min, self.f_max}]."
-                )
+        Raises
+        ------
+        ValueError if f_min or f_max is not in the original interval
 
-    def update_data(self, data: np.ndarray, axis: int = -1, low_value: float = 0.0):
+        """
+
+        def _in_range(self, f: float) -> bool:
+            return f >= self._f_min and f <= self._f_max
+
+        def _get_value(self, f: Optional[float]) -> Optional[float]:
+            if f is None:
+                return None
+            if not self._in_range(f):
+                raise ValueError(
+                    f"Cannot update FrequencyDomain range, {f} not in interval [{self._f_min, self._f_max}]"
+                )
+            return f
+
+        f_min = _get_value(self, f_min)
+        self._f_min = f_min if f_min is not None else self._f_min
+        f_max = _get_value(self, f_max)
+        self._f_max = f_max if f_max is not None else self._f_max
+
+    @override
+    def time_translate_data(self, data, dt):
+        """
+        Time translate frequency-domain data by dt. Time translation corresponds (in
+        frequency domain) to multiplication by
+
+        .. math::
+            \exp(-2 \pi i \, f \, dt).
+
+        This method allows for multiple batch dimensions. For torch.Tensor data,
+        allow for either a complex or a (real, imag) representation.
+
+        Parameters
+        ----------
+        data : array-like (numpy, torch)
+            Shape (B, C, N), where
+
+                - B corresponds to any dimension >= 0,
+                - C is either absent (for complex data) or has dimension >= 2 (for data
+                  represented as real and imaginary parts), and
+                - N is either len(self) or len(self)-self.min_idx (for truncated data).
+
+        dt : torch tensor, or scalar (if data is numpy)
+            Shape (B)
+
+        Returns
+        -------
+        Array-like of the same form as data.
+        """
+        f = self._get_sample_frequencies_astype(data)
+        if isinstance(data, np.ndarray):
+            # Assume numpy arrays un-batched, since they are only used at train time.
+            phase_shift = 2 * np.pi * dt * f
+        elif isinstance(data, torch.Tensor):
+            # Allow for possible multiple "batch" dimensions (e.g., batch + detector,
+            # which might have independent time shifts).
+            phase_shift = 2 * np.pi * torch.einsum("...,i", dt, f)
+        else:
+            raise NotImplementedError(
+                f"Time translation not implemented for data of " "type {data}."
+            )
+        return self.add_phase(data, phase_shift)
+
+    @override
+    def __len__(self):
+        """Number of frequency bins in the domain [0, f_max]"""
+        return int(self.f_max / self.delta_f) + 1
+
+    @override
+    def __call__(self) -> np.ndarray:
+        """Array of uniform frequency bins in the domain [0, f_max]"""
+        return self.sample_frequencies
+
+    @property
+    @override
+    def min_idx(self):
+        return round(self._f_min / self._delta_f)
+
+    @property
+    @override
+    def max_idx(self):
+        return round(self._f_max / self._delta_f)
+
+    @property
+    @override
+    def noise_std(self) -> float:
+        """Standard deviation of the whitened noise distribution.
+
+        To have noise that comes from a multivariate *unit* normal
+        distribution, you must divide by this factor. In practice, this means
+        dividing the whitened waveforms by this.
+
+        TODO: This description makes some assumptions that need to be clarified.
+        Windowing of TD data; tapering window has a slope -> reduces power only for noise,
+        but not for the signal which is in the main part unaffected by the taper
+        """
+        if self._window_factor is None:
+            raise ValueError("Window factor needs to be set for noise_std.")
+        return np.sqrt(self._window_factor) / np.sqrt(4.0 * self._delta_f)
+
+    @property
+    @override
+    def f_max(self) -> float:
+        """The maximum frequency [Hz] is typically set to half the sampling
+        rate."""
+        return self._f_max
+
+    @f_max.setter
+    @_reset_sf
+    def f_max(self, value):
+        self._f_max = float(value)
+
+    @property
+    @override
+    def f_min(self) -> float:
+        """The minimum frequency [Hz]."""
+        return self._f_min
+
+    @f_min.setter
+    @_reset_sf
+    def f_min(self, value):
+        self._f_min = float(value)
+
+    @property
+    @override
+    def delta_f(self) -> float:
+        """The frequency spacing of the uniform grid [Hz]."""
+        return self._delta_f
+
+    @delta_f.setter
+    @_reset_sf
+    def delta_f(self, value):
+        self._delta_f = float(value)
+
+    @property
+    @override
+    def duration(self) -> float:
+        """Waveform duration in seconds."""
+        return 1.0 / self.delta_f
+
+    @property
+    @override
+    def sampling_rate(self) -> float:
+        return 2.0 * self.f_max
+
+    @property
+    @override
+    def domain_dict(self):
+        """Enables to rebuild the domain via calling build_domain(domain_dict)."""
+        return {
+            "type": "FrequencyDomain",
+            "f_min": self.f_min,
+            "f_max": self.f_max,
+            "delta_f": self.delta_f,
+            "window_factor": self.window_factor,
+        }
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if type(other) != type(self):
+            return False
+        if not any(
+            [
+                getattr(self, attr) != getattr(other, attr)
+                for attr in ("_f_min", "_f_max", "_delta_f", "_window_factor")
+            ]
+        ):
+            return False
+        return True
+
+    def update_data(
+        self, data: np.ndarray, axis: int = -1, low_value: float = 0.0
+    ):
         """
         Adjusts data to be compatible with the domain:
 
@@ -194,49 +391,97 @@ class FrequencyDomain(Domain):
 
         return data
 
-    def time_translate_data(self, data, dt):
+    @dispatch(np.ndarray, np.ndarray)
+    def add_phase(data: np.ndarray, phase: np.ndarray) -> np.ndarray:
         """
-        Time translate frequency-domain data by dt. Time translation corresponds (in
-        frequency domain) to multiplication by
+        Add a (frequency-dependent) phase to a frequency series for numpy arrays.
+        Assumes data is a complex frequency series.
 
-        .. math::
-            \exp(-2 \pi i \, f \, dt).
-
-        This method allows for multiple batch dimensions. For torch.Tensor data,
-        allow for either a complex or a (real, imag) representation.
+        Convention: the phase phi(f) is defined via exp(- 1j * phi(f)).
 
         Parameters
         ----------
-        data : array-like (numpy, torch)
-            Shape (B, C, N), where
-
-                - B corresponds to any dimension >= 0,
-                - C is either absent (for complex data) or has dimension >= 2 (for data
-                  represented as real and imaginary parts), and
-                - N is either len(self) or len(self)-self.min_idx (for truncated data).
-
-        dt : torch tensor, or scalar (if data is numpy)
-            Shape (B)
+        data : np.ndarray
+        phase : np.ndarray
 
         Returns
         -------
-        Array-like of the same form as data.
+        New array of the same shape as data.
         """
-        f = self.get_sample_frequencies_astype(data)
-        if isinstance(data, np.ndarray):
-            # Assume numpy arrays un-batched, since they are only used at train time.
-            phase_shift = 2 * np.pi * dt * f
-        elif isinstance(data, torch.Tensor):
-            # Allow for possible multiple "batch" dimensions (e.g., batch + detector,
-            # which might have independent time shifts).
-            phase_shift = 2 * np.pi * torch.einsum("...,i", dt, f)
-        else:
-            raise NotImplementedError(
-                f"Time translation not implemented for data of " "type {data}."
-            )
-        return self.add_phase(data, phase_shift)
+        if not np.iscomplexobj(data):
+            raise TypeError("Numpy data must be a complex array.")
+        return data * np.exp(-1j * phase)
 
-    def get_sample_frequencies_astype(self, data):
+    @dispatch(torch.Tensor, torch.Tensor)
+    def add_phase(data: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
+        """
+        Add a (frequency-dependent) phase to a frequency series for torch tensors.
+        Handles both complex tensors and real-imaginary part representation.
+
+        Convention: the phase phi(f) is defined via exp(- 1j * phi(f)).
+
+        Parameters
+        ----------
+        data : torch.Tensor
+        phase : torch.Tensor
+
+        Returns
+        -------
+        New tensor of the same shape as data.
+        """
+        if torch.is_complex(data):
+            # Expand the trailing batch dimensions to allow for broadcasting.
+            while phase.dim() < data.dim():
+                phase = phase[..., None, :]
+            return data * torch.exp(-1j * phase)
+        else:
+            # The first two components of the second last index should be the real
+            # and imaginary parts of the data. Remaining components correspond to,
+            # e.g., the ASD. The "-1" below accounts for this extra dimension when
+            # broadcasting.
+            while phase.dim() < data.dim() - 1:
+                phase = phase[..., None, :]
+
+            cos_phase = torch.cos(phase)
+            sin_phase = torch.sin(phase)
+            result = torch.empty_like(data)
+            result[..., 0, :] = (
+                data[..., 0, :] * cos_phase + data[..., 1, :] * sin_phase
+            )
+            result[..., 1, :] = (
+                data[..., 1, :] * cos_phase - data[..., 0, :] * sin_phase
+            )
+            if data.shape[-2] > 2:
+                result[..., 2:, :] = data[..., 2:, :]
+            return result
+
+    def __getitem__(self, idx):
+        """Slice of uniform frequency grid."""
+        sample_frequencies = self.__call__()
+        return sample_frequencies[idx]
+
+    @property
+    def sample_frequencies(self):
+        return self._sample_frequences.get()
+
+    @property
+    def _sample_frequencies_torch(self):
+        if self._sample_frequencies_torch is None:
+            num_bins = len(self)
+            self._sample_frequencies_torch = torch.linspace(
+                0.0, self.f_max, steps=num_bins, dtype=torch.float32
+            )
+        return self._sample_frequencies_torch
+
+    @property
+    def _sample_frequencies_torch_cuda(self):
+        if self._sample_frequencies_torch_cuda is None:
+            self._sample_frequencies_torch_cuda = (
+                self.sample_frequencies_torch.to("cuda")
+            )
+        return self._sample_frequencies_torch_cuda
+
+    def _get_sample_frequencies_astype(self, data):
         """
         Returns a 1D frequency array compatible with the last index of data array.
 
@@ -257,11 +502,13 @@ class FrequencyDomain(Domain):
             f = self.sample_frequencies
         elif isinstance(data, torch.Tensor):
             if data.is_cuda:
-                f = self.sample_frequencies_torch_cuda
+                f = self._sample_frequencies_torch_cuda
             else:
-                f = self.sample_frequencies_torch
+                f = self._sample_frequencies_torch
         else:
-            raise TypeError("Invalid data type. Should be np.array or torch.Tensor.")
+            raise TypeError(
+                "Invalid data type. Should be np.array or torch.Tensor."
+            )
 
         # Whether to include zeros below f_min
         if data.shape[-1] == len(self) - self.min_idx:
@@ -274,110 +521,11 @@ class FrequencyDomain(Domain):
 
         return f
 
-    @staticmethod
-    def add_phase(data, phase):
-        """
-        Add a (frequency-dependent) phase to a frequency series. Allows for batching,
-        as well as additional channels (such as detectors). Accounts for the fact that
-        the data could be a complex frequency series or real and imaginary parts.
-
-        Convention: the phase phi(f) is defined via exp(- 1j * phi(f)).
-
-        Parameters
-        ----------
-        data : Union[np.array, torch.Tensor]
-        phase : Union[np.array, torch.Tensor]
-
-        Returns
-        -------
-        New array or tensor of the same shape as data.
-        """
-        if isinstance(data, np.ndarray) and np.iscomplexobj(data):
-            # This case is assumed to only occur during inference, with un-batched data.
-            return data * np.exp(-1j * phase)
-
-        elif isinstance(data, torch.Tensor):
-            if torch.is_complex(data):
-                # Expand the trailing batch dimensions to allow for broadcasting.
-                while phase.dim() < data.dim():
-                    phase = phase[..., None, :]
-                return data * torch.exp(-1j * phase)
-            else:
-                # The first two components of the second last index should be the real
-                # and imaginary parts of the data. Remaining components correspond to,
-                # e.g., the ASD. The "-1" below accounts for this extra dimension when
-                # broadcasting.
-                while phase.dim() < data.dim() - 1:
-                    phase = phase[..., None, :]
-
-                cos_phase = torch.cos(phase)
-                sin_phase = torch.sin(phase)
-                result = torch.empty_like(data)
-                result[..., 0, :] = (
-                    data[..., 0, :] * cos_phase + data[..., 1, :] * sin_phase
-                )
-                result[..., 1, :] = (
-                    data[..., 1, :] * cos_phase - data[..., 0, :] * sin_phase
-                )
-                if data.shape[-2] > 2:
-                    result[..., 2:, :] = data[..., 2:, :]
-                return result
-
-        else:
-            raise TypeError(f"Invalid data type {type(data)}.")
-
-    def __len__(self):
-        """Number of frequency bins in the domain [0, f_max]"""
-        return int(self.f_max / self.delta_f) + 1
-
-    def __call__(self) -> np.ndarray:
-        """Array of uniform frequency bins in the domain [0, f_max]"""
-        return self.sample_frequencies
-
-    def __getitem__(self, idx):
-        """Slice of uniform frequency grid."""
-        sample_frequencies = self.__call__()
-        return sample_frequencies[idx]
-
-    @property
-    def sample_frequencies(self):
-        if self._sample_frequencies is None:
-            num_bins = len(self)
-            self._sample_frequencies = np.linspace(
-                0.0, self.f_max, num=num_bins, endpoint=True, dtype=np.float32
-            )
-        return self._sample_frequencies
-
-    @property
-    def sample_frequencies_torch(self):
-        if self._sample_frequencies_torch is None:
-            num_bins = len(self)
-            self._sample_frequencies_torch = torch.linspace(
-                0.0, self.f_max, steps=num_bins, dtype=torch.float32
-            )
-        return self._sample_frequencies_torch
-
-    @property
-    def sample_frequencies_torch_cuda(self):
-        if self._sample_frequencies_torch_cuda is None:
-            self._sample_frequencies_torch_cuda = self.sample_frequencies_torch.to(
-                "cuda"
-            )
-        return self._sample_frequencies_torch_cuda
-
     @property
     def frequency_mask(self) -> np.ndarray:
         """Mask which selects frequency bins greater than or equal to the
         starting frequency"""
-        if self._frequency_mask is None:
-            self._frequency_mask = self.sample_frequencies >= self.f_min
-        return self._frequency_mask
-
-    def _reset_caches(self):
-        self._sample_frequencies = None
-        self._sample_frequencies_torch = None
-        self._sample_frequencies_torch_cuda = None
-        self._frequency_mask = None
+        return self._sample_frequences.frequency_mask
 
     @property
     def frequency_mask_length(self) -> int:
@@ -385,89 +533,15 @@ class FrequencyDomain(Domain):
         mask = self.frequency_mask
         return len(np.flatnonzero(np.asarray(mask)))
 
-    @property
-    def min_idx(self):
-        return round(self._f_min / self._delta_f)
-
-    @property
-    def max_idx(self):
-        return round(self._f_max / self._delta_f)
-
-    @property
-    def window_factor(self):
-        return self._window_factor
-
-    @window_factor.setter
-    def window_factor(self, value):
-        """Set self._window_factor and clear cache of self.noise_std."""
-        self._window_factor = float(value)
-
-    @property
-    def noise_std(self) -> float:
-        """Standard deviation of the whitened noise distribution.
-
-        To have noise that comes from a multivariate *unit* normal
-        distribution, you must divide by this factor. In practice, this means
-        dividing the whitened waveforms by this.
-
-        TODO: This description makes some assumptions that need to be clarified.
-        Windowing of TD data; tapering window has a slope -> reduces power only for noise,
-        but not for the signal which is in the main part unaffected by the taper
-        """
-        if self._window_factor is None:
-            raise ValueError("Window factor needs to be set for noise_std.")
-        return np.sqrt(self._window_factor) / np.sqrt(4.0 * self._delta_f)
-
-    @property
-    def f_max(self) -> float:
-        """The maximum frequency [Hz] is typically set to half the sampling
-        rate."""
-        return self._f_max
-
-    @f_max.setter
-    def f_max(self, value):
-        self._f_max = float(value)
-        self._reset_caches()
-
-    @property
-    def f_min(self) -> float:
-        """The minimum frequency [Hz]."""
-        return self._f_min
-
-    @f_min.setter
-    def f_min(self, value):
-        self._f_min = float(value)
-        self._reset_caches()
-
-    @property
-    def delta_f(self) -> float:
-        """The frequency spacing of the uniform grid [Hz]."""
-        return self._delta_f
-
-    @delta_f.setter
-    def delta_f(self, value):
-        self._delta_f = float(value)
-        self._reset_caches()
-
-    @property
-    def duration(self) -> float:
-        """Waveform duration in seconds."""
-        return 1.0 / self.delta_f
-
-    @property
-    def sampling_rate(self) -> float:
-        return 2.0 * self.f_max
-
-    @property
-    def domain_dict(self):
-        """Enables to rebuild the domain via calling build_domain(domain_dict)."""
-        return {
-            "type": "FrequencyDomain",
-            "f_min": self.f_min,
-            "f_max": self.f_max,
-            "delta_f": self.delta_f,
-            "window_factor": self.window_factor,
-        }
+    # Vincent: This does not seem to be used (?)
+    # @property
+    # def window_factor(self):
+    #    return self._window_factor
+    #
+    # @window_factor.setter
+    # def window_factor(self, value):
+    #    """Set self._window_factor and clear cache of self.noise_std."""
+    #    self._window_factor = float(value)
 
 
 class TimeDomain(Domain):
@@ -492,7 +566,11 @@ class TimeDomain(Domain):
         """Array of uniform times at which data is sampled"""
         num_bins = self.__len__()
         return np.linspace(
-            0.0, self._time_duration, num=num_bins, endpoint=False, dtype=np.float32
+            0.0,
+            self._time_duration,
+            num=num_bins,
+            endpoint=False,
+            dtype=np.float32,
         )
 
     @property
@@ -602,7 +680,9 @@ def build_domain(settings: Dict) -> Domain:
     elif settings["type"] == ["TimeDomain", "TD"]:
         return TimeDomain(**kwargs)
     else:
-        raise NotImplementedError(f'Domain {settings["name"]} not implemented.')
+        raise NotImplementedError(
+            f'Domain {settings["name"]} not implemented.'
+        )
 
 
 def build_domain_from_model_metadata(model_metadata) -> Domain:
@@ -621,7 +701,9 @@ def build_domain_from_model_metadata(model_metadata) -> Domain:
     """
     domain = build_domain(model_metadata["dataset_settings"]["domain"])
     if "domain_update" in model_metadata["train_settings"]["data"]:
-        domain.update(model_metadata["train_settings"]["data"]["domain_update"])
+        domain.update(
+            model_metadata["train_settings"]["data"]["domain_update"]
+        )
     domain.window_factor = get_window_factor(
         model_metadata["train_settings"]["data"]["window"]
     )

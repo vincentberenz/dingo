@@ -1,23 +1,26 @@
-import time
-import os
-import numpy as np
-from os.path import join, isfile
 import csv
-from typing import Literal
+import os
+import time
+from os.path import isfile, join
+from typing import Any, Literal, Optional
+
+import numpy as np
 
 
 class AvgTracker:
-    def __init__(self):
+    def __init__(self) -> None:
         self.sum = 0
         self.N = 0
-        self.x = None
+        # Vincent: commenting x to see if that breaks anything
+        # (not used in the class)
+        # self.x = None
 
-    def update(self, x, n=1):
+    def update(self, x, n=1) -> None:
         self.sum += x
         self.N += n
-        self.x = x
+        # self.x = x
 
-    def get_avg(self):
+    def get_avg(self) -> float:
         if self.N == 0:
             return float("nan")
         return self.sum / self.N
@@ -32,7 +35,13 @@ class EarlyStopping:
     early stopping occurs.
     """
 
-    def __init__(self, patience: int = 5, verbose: bool = False, delta: float = 0.0, metric: Literal["training", "validation"]="validation"):
+    def __init__(
+        self,
+        patience: int = 5,
+        verbose: bool = False,
+        delta: float = 0.0,
+        metric: Literal["training", "validation"] = "validation",
+    ):
         """
         Parameters
         ----------
@@ -51,7 +60,9 @@ class EarlyStopping:
         self.val_loss_min = np.Inf
         self.delta = delta
         if metric not in ["training", "validation"]:
-            raise ValueError("Early Stopping metric must be 'training' or 'validation'.")
+            raise ValueError(
+                "Early Stopping metric must be 'training' or 'validation'."
+            )
         self.metric = metric
 
     def __call__(self, val_loss: float):
@@ -237,14 +248,14 @@ class RuntimeLimits:
 
 
 def write_history(
-    log_dir,
-    epoch,
-    train_loss,
-    test_loss,
-    learning_rates,
-    aux=None,
-    filename="history.txt",
-):
+    log_dir: str,
+    epoch: int,
+    train_loss: float,
+    test_loss: float,
+    learning_rates: list[float],
+    aux: Optional[list[Any]] = None,
+    filename: str = "history.txt",
+) -> None:
     """
     Writes losses and learning rate history to csv file.
 

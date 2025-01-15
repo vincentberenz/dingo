@@ -1,17 +1,19 @@
+from typing import Iterable, Tuple, Union
+
+import bilby
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-from typing import Union, Tuple, Iterable
-import bilby
 
 
 def fix_random_seeds(_):
     """Utility function to set random seeds when using multiple workers for DataLoader."""
-    np.random.seed(int(torch.initial_seed()) % (2 ** 32 - 1))
+    np.random.seed(int(torch.initial_seed()) % (2**32 - 1))
     try:
-        bilby.core.utils.random.seed(int(torch.initial_seed()) % (2 ** 32 - 1))
+        bilby.core.utils.random.seed(int(torch.initial_seed()) % (2**32 - 1))
     except AttributeError:  # In case using an old version of Bilby.
         pass
 
@@ -133,33 +135,6 @@ def get_scheduler_from_kwargs(
         raise ValueError("No valid scheduler specified.")
     scheduler = schedulers_dict[scheduler_kwargs.pop("type")]
     return scheduler(optimizer, **scheduler_kwargs)
-
-
-def perform_scheduler_step(
-    scheduler,
-    loss=None,
-):
-    """
-    Wrapper for scheduler.step(). If scheduler is ReduceLROnPlateau,
-    then scheduler.step(loss) is called, if not, scheduler.step().
-
-    Parameters
-    ----------
-
-    scheduler:
-        scheduler for learning rate
-    loss:
-        validation loss
-    """
-    if type(scheduler) == torch.optim.lr_scheduler.ReduceLROnPlateau:
-        scheduler.step(loss)
-    else:
-        scheduler.step()
-
-
-def get_lr(optimizer):
-    """Returns a list with the learning rates of the optimizer."""
-    return [param_group["lr"] for param_group in optimizer.state_dict()["param_groups"]]
 
 
 def split_dataset_into_train_and_test(dataset, train_fraction):

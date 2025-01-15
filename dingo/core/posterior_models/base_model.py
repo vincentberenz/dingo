@@ -2,25 +2,35 @@
 This module contains the abstract base class for representing posterior models,
 as well as functions for training and testing across an epoch.
 """
-from abc import abstractmethod, ABC
-import os
-from os.path import join
-import h5py
 
-import torch
-import dingo.core.utils as utils
-from torch.utils.data import Dataset
-import time
-import numpy as np
-from threadpoolctl import threadpool_limits
-import dingo.core.utils.trainutils
 import json
+import os
+import time
+from abc import ABC, abstractmethod
 from collections import OrderedDict
-from typing import Optional
+from os.path import join
+from typing import Optional, Protocol
+
+import h5py
+import numpy as np
+import torch
+from threadpoolctl import threadpool_limits
+from torch.optim.lr_scheduler import LRScheduler
+from torch.optim.optimizer import Optimizer
+from torch.utils.data import Dataset
+
+import dingo.core.utils as utils
+import dingo.core.utils.trainutils
 from dingo.core.utils.backward_compatibility import update_model_config
 from dingo.core.utils.misc import get_version
+from dingo.core.utils.trainutils import EarlyStopping, RuntimeLimits
 
-from dingo.core.utils.trainutils import EarlyStopping
+
+class TrainableModel(Protocol):
+    network
+    device: torch.device
+
+    def loss(self, theta: torch.Tensor, *context: torch.Tensor) -> torch.Tensor: ...
 
 
 class BasePosteriorModel(ABC):
@@ -70,7 +80,7 @@ class BasePosteriorModel(ABC):
             # Expect self.optimizer_settings and self.scheduler_settings to be set
             # separately, and before calling initialize_optimizer_and_scheduler().
 
-        self.epoch = 0
+        # self.epoch = 0
         self.network = None
         self.optimizer = None
         self.scheduler = None
@@ -360,112 +370,145 @@ class BasePosteriorModel(ABC):
                 # put model in evaluation mode
                 self.network.eval()
 
-    def train(
-        self,
-        train_loader: torch.utils.data.DataLoader,
-        test_loader: torch.utils.data.DataLoader,
-        train_dir: str,
-        runtime_limits: object = None,
-        checkpoint_epochs: int = None,
-        use_wandb=False,
-        test_only=False,
-        early_stopping: Optional[EarlyStopping] = None,
-    ):
-        """
 
-        Parameters
-        ----------
-        train_loader
-        test_loader
-        train_dir
-        runtime_limits
-        checkpoint_epochs
-        use_wandb
-        test_only: bool = False
-            if True, training is skipped
-        early_stopping: EarlyStopping
-            Optional EarlyStopping instance.
+def train_test(
+    posterior_model: TrainableModel,
+    epoch: int,
+    test_loader: torch.utils.data.DataLoader,
+):
+    test_loss = test_epoch(posterior_model, epoch, test_loader)
+    print(f"test loss: {test_loss:.3f}")
 
-        Returns
-        -------
 
-        """
+def train(
+    posterior_model: TrainableModel,
+    epoch: int,
+    train_loader: torch.utils.data.DataLoader,
+    test_loader: torch.utils.data.DataLoader,
+    train_dir: str,
+    runtime_limits: RuntimeLimits,
+    optimizer: Optimizer,
+    scheduler: LRScheduler,
+    checkpoint_epochs: Optional[int] = None,
+    use_wandb=False,
+    test_only=False,
+    early_stopping: Optional[EarlyStopping] = None,
+) -> int:
+    """
 
-        if test_only:
-            test_loss = test_epoch(self, test_loader)
-            print(f"test loss: {test_loss:.3f}")
+    Parameters
+    ----------
+    train_loader
+    test_loader
+    train_dir
+    runtime_limits
+    checkpoint_epochs
+    use_wandb
+    test_only: bool = False
+        if True, training is skipped
+    early_stopping: EarlyStopping
+        Optional EarlyStopping instance.
 
+    Returns
+    -------
+    Updated epoch number
+
+    """
+    # Vincent:
+    # actually posterior_model only requires (?):
+    # - network
+    # - loss function
+
+    # if test_only:
+    #    test_loss = test_epoch(posterior_model, epoch, test_loader)
+    #    print(f"test loss: {test_loss:.3f}")
+
+    # else:
+    while not runtime_limits.limits_exceeded(epoch):
+        epoch += 1
+
+        # Training
+
+        # list with the learning rates of the optimizer
+        lr: list[float] = [
+            param_group["lr"] for param_group in optimizer.state_dict()["param_groups"]
+        ]
+
+        with threadpool_limits(limits=1, user_api="blas"):
+            print(f"\nStart training epoch {epoch} with lr {lr}")
+            time_start = time.time()
+            train_loss: float = train_epoch(
+                posterior_model, epoch, optimizer, train_loader
+            )
+            train_time = time.time() - time_start
+
+            print(
+                "Done. This took {:2.0f}:{:2.0f} min.".format(*divmod(train_time, 60))
+            )
+
+            # Testing
+            print(f"Start testing epoch {epoch}")
+            time_start = time.time()
+            test_loss: float = test_epoch(posterior_model, epoch, test_loader)
+            test_time = time.time() - time_start
+
+            print(
+                "Done. This took {:2.0f}:{:2.0f} min.".format(
+                    *divmod(time.time() - time_start, 60)
+                )
+            )
+
+        # scheduler step for learning rate
+        if type(scheduler) == torch.optim.lr_scheduler.ReduceLROnPlateau:
+            scheduler.step(test_loss)
         else:
-            while not runtime_limits.limits_exceeded(self.epoch):
-                self.epoch += 1
+            scheduler.step()
 
-                # Training
-                lr = utils.get_lr(self.optimizer)
-                with threadpool_limits(limits=1, user_api="blas"):
-                    print(f"\nStart training epoch {self.epoch} with lr {lr}")
-                    time_start = time.time()
-                    train_loss = train_epoch(self, train_loader)
-                    train_time = time.time() - time_start
+        # write history and save model
+        utils.write_history(train_dir, epoch, train_loss, test_loss, lr)
+        utils.save_model(self, train_dir, checkpoint_epochs=checkpoint_epochs)
+        if use_wandb:
+            try:
+                import wandb
 
-                    print(
-                        "Done. This took {:2.0f}:{:2.0f} min.".format(
-                            *divmod(train_time, 60)
-                        )
-                    )
+                wandb.define_metric("epoch")
+                wandb.define_metric("*", step_metric="epoch")
+                wandb.log(
+                    {
+                        "epoch": self.epoch,
+                        "learning_rate": lr[0],
+                        "train_loss": train_loss,
+                        "test_loss": test_loss,
+                        "train_time": train_time,
+                        "test_time": test_time,
+                    }
+                )
+            except ImportError:
+                print("wandb not installed. Skipping logging to wandb.")
 
-                    # Testing
-                    print(f"Start testing epoch {self.epoch}")
-                    time_start = time.time()
-                    test_loss = test_epoch(self, test_loader)
-                    test_time = time.time() - time_start
+        if early_stopping is not None:
+            is_best_model = early_stopping(test_loss)
+            if is_best_model:
+                self.save_model(
+                    join(train_dir, "best_model.pt"), save_training_info=False
+                )
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+        print(f"Finished training epoch {self.epoch}.\n")
 
-                    print(
-                        "Done. This took {:2.0f}:{:2.0f} min.".format(
-                            *divmod(time.time() - time_start, 60)
-                        )
-                    )
-
-                # scheduler step for learning rate
-                utils.perform_scheduler_step(self.scheduler, test_loss)
-
-                # write history and save model
-                utils.write_history(train_dir, self.epoch, train_loss, test_loss, lr)
-                utils.save_model(self, train_dir, checkpoint_epochs=checkpoint_epochs)
-                if use_wandb:
-                    try:
-                        import wandb
-
-                        wandb.define_metric("epoch")
-                        wandb.define_metric("*", step_metric="epoch")
-                        wandb.log(
-                            {
-                                "epoch": self.epoch,
-                                "learning_rate": lr[0],
-                                "train_loss": train_loss,
-                                "test_loss": test_loss,
-                                "train_time": train_time,
-                                "test_time": test_time,
-                            }
-                        )
-                    except ImportError:
-                        print("wandb not installed. Skipping logging to wandb.")
-
-                if early_stopping is not None:
-                    is_best_model = early_stopping(test_loss)
-                    if is_best_model:
-                        self.save_model(
-                            join(train_dir, "best_model.pt"), save_training_info=False
-                        )
-                    if early_stopping.early_stop:
-                        print("Early stopping")
-                        break
-                print(f"Finished training epoch {self.epoch}.\n")
+    return epoch
 
 
-def train_epoch(pm, dataloader):
+def train_epoch(
+    pm: TrainableModel,
+    epoch: int,
+    optimizer: Optimizer,
+    dataloader: torch.utils.data.DataLoader,
+) -> float:
     pm.network.train()
     loss_info = dingo.core.utils.trainutils.LossInfo(
-        pm.epoch,
+        epoch,
         len(dataloader.dataset),
         dataloader.batch_size,
         mode="Train",
@@ -474,14 +517,14 @@ def train_epoch(pm, dataloader):
 
     for batch_idx, data in enumerate(dataloader):
         loss_info.update_timer()
-        pm.optimizer.zero_grad()
+        optimizer.zero_grad()
         # data to device
         data = [d.to(pm.device, non_blocking=True) for d in data]
         # compute loss
         loss = pm.loss(data[0], *data[1:])
         # backward pass and optimizer step
         loss.backward()
-        pm.optimizer.step()
+        optimizer.step()
         # update loss for history and logging
         loss_info.update(loss.detach().item(), len(data[0]))
         loss_info.print_info(batch_idx)
@@ -489,11 +532,13 @@ def train_epoch(pm, dataloader):
     return loss_info.get_avg()
 
 
-def test_epoch(pm, dataloader):
+def test_epoch(
+    pm: BasePosteriorModel, epoch: int, dataloader: torch.utils.DataLoader
+) -> float:
     with torch.no_grad():
         pm.network.eval()
         loss_info = dingo.core.utils.trainutils.LossInfo(
-            pm.epoch,
+            epoch,
             len(dataloader.dataset),
             dataloader.batch_size,
             mode="Test",
