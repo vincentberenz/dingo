@@ -1,13 +1,12 @@
 from abc import ABC, abstractmethod
-from enum import Enum
 from functools import cached_property, lru_cache
-from typing import Optional, override
-
+from typing import Optional
+from typing_extensions import override
 import numpy as np
 import torch
 from multipledispatch import dispatch
 
-from dingo.gw.gwutils import *
+# from dingo.gw.gwutils import *
 
 
 class Domain(ABC):
@@ -158,11 +157,9 @@ class FrequencyDomain(Domain):
         self._delta_f = delta_f
         self._window_factor = window_factor
 
-        self._sample_frequences = _SampleFrequencies(f_max, delta_f)
-        # self._sample_frequencies = None
-        # self._sample_frequencies_torch = None
-        # self._sample_frequencies_torch_cuda = None
-        # self._frequency_mask = None
+        self._sample_frequences = _SampleFrequencies(
+            f_min, f_max, delta_f
+        )
 
     @override
     def update(
@@ -412,8 +409,10 @@ class FrequencyDomain(Domain):
             raise TypeError("Numpy data must be a complex array.")
         return data * np.exp(-1j * phase)
 
-    @dispatch(torch.Tensor, torch.Tensor)
-    def add_phase(data: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
+    @dispatch(torch.Tensor, torch.Tensor)  # type: ignore
+    def add_phase(  # type: ignore
+            data: torch.Tensor, phase: torch.Tensor
+    ) -> torch.Tensor:
         """
         Add a (frequency-dependent) phase to a frequency series for torch tensors.
         Handles both complex tensors and real-imaginary part representation.
@@ -512,7 +511,7 @@ class FrequencyDomain(Domain):
 
         # Whether to include zeros below f_min
         if data.shape[-1] == len(self) - self.min_idx:
-            f = f[self.min_idx :]
+            f = f[self.min_idx:]
         elif data.shape[-1] != len(self):
             raise TypeError(
                 f"Data with {data.shape[-1]} frequency bins is "

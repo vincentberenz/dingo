@@ -69,7 +69,8 @@ def generate_parameters_and_polarizations(
                     waveform_generator, parameters, pool
                 )
     else:
-        polarizations = generate_waveforms_parallel(waveform_generator, parameters)
+        polarizations = generate_waveforms_parallel(
+            waveform_generator, parameters)
 
     # Find cases where waveform generation failed and only return data for successful ones
     wf_failed = np.any(np.isnan(polarizations["h_plus"]), axis=1)
@@ -114,8 +115,10 @@ def train_svd_basis(dataset: WaveformDataset, size: int, n_train: int):
         training and validation.
     """
     # Prepare data for training and validation.
-    train_data = np.vstack([val[:n_train] for val in dataset.polarizations.values()])
-    test_data = np.vstack([val[n_train:] for val in dataset.polarizations.values()])
+    train_data = np.vstack([val[:n_train]
+                           for val in dataset.polarizations.values()])
+    test_data = np.vstack([val[n_train:]
+                          for val in dataset.polarizations.values()])
     test_parameters = pd.concat(
         [
             # I would like to save the polarization, but saving the dataframe with
@@ -169,7 +172,8 @@ def generate_waveform_dataset(settings: Dict, num_processes: int) -> WaveformDat
     prior = build_prior_with_defaults(settings["intrinsic_prior"])
     domain = build_domain(settings["domain"])
 
-    new_interface_flag = settings["waveform_generator"].get("new_interface", False)
+    new_interface_flag = settings["waveform_generator"].get(
+        "new_interface", False)
     if new_interface_flag:
         waveform_generator = NewInterfaceWaveformGenerator(
             domain=domain,

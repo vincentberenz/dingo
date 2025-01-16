@@ -71,10 +71,12 @@ homepage = "https://github.com/dingo-gw/dingo"
 dev = [
     "black",
     "linkify-it-py",
+    "mypy",
     "myst-nb",
     "myst-parser",
     "pylint",
     "pytest",
+    "scipy-stubs"
     "sphinx",
     "sphinx-math-dollar",
     "sphinx-rtd-theme",

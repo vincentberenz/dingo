@@ -1,3 +1,22 @@
+"""
+Module defining class_factory, a function for instantiating classes
+based on configuration dicts.
+
+E.g.
+
+```
+domain : FrequencyDomain = class_factory(
+    "dingo.gw.domain.FrequencyDomain",
+    {
+         f_min: 20.0,
+         f_max: 1024.0,
+         delta_f: 0.25
+    }
+)
+```
+
+"""
+
 from multipledispatch import dispatch
 import importlib
 import inspect
