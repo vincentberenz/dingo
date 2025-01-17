@@ -1,0 +1,11 @@
+@dataclass
+class DomainFactory:
+    type: str
+    args: dict[str, Any]
+
+    def instantiate(self) -> Domain:
+        if self.type == "FrequencyDomain":
+            return class_factory(FrequencyDomain, self.args)
+        elif self.type == "TimeDomain":
+            return class_factory(TimeDomain, self.args)
+        return class_factory(self.type, self.args)

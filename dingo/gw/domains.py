@@ -165,7 +165,7 @@ class FrequencyDomain(Domain):
     def update(
         self,
         f_min: Optional[float],
-        f_max: Optional[float],
+        f_max: Optional[float]
     ) -> None:
         """
         Update the domain range.
@@ -341,7 +341,7 @@ class FrequencyDomain(Domain):
 
     @override
     def __eq__(self, other: object) -> bool:
-        if type(other) != type(self):
+        if type(other) is not type(self):
             return False
         if not any(
             [
@@ -555,6 +555,12 @@ class TimeDomain(Domain):
         self._time_duration = time_duration
         self._sampling_rate = sampling_rate
 
+    @override
+    def update(self) -> None:
+        raise NotImplementedError(
+            "TimeDomain does not support update"
+        )
+
     @lru_cache()
     def __len__(self):
         """Number of time bins given duration and sampling rate"""
@@ -652,7 +658,7 @@ class PCADomain(Domain):
         return np.sqrt(self.window_factor) / np.sqrt(4.0 * self.delta_f)
 
 
-def build_domain(settings: Dict) -> Domain:
+def build_domain(settings: dict) -> Domain:
     """
     Instantiate a domain class from settings.
 
