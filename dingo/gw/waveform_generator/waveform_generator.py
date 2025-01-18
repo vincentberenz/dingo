@@ -1,10 +1,12 @@
 from functools import partial
 from multiprocessing import Pool
 from math import isclose
-
 import numpy as np
 import astropy.units as u
-from typing import Dict, Tuple, Union, TypedDict, Iterable, Optional, Protocol
+from typing import (
+    Dict, Tuple, Union,
+    Iterable, Optional, Protocol, Literal
+)
 from numbers import Number
 import warnings
 import pandas as pd
@@ -21,9 +23,10 @@ import dingo.gw.waveform_generator.frame_utils as frame_utils
 from dingo.gw.domains import Domain, FrequencyDomain, TimeDomain
 
 
-class PolarizationDict(TypedDict):
-    h_plus: np.ndarray
-    h_cross: np.ndarray
+from dingo.gw.parameters import (
+    PolarizationDict, BlackHoleParameters, LaLBlackHoleParameters,
+    LaLSimulationSpins, to_lal_simulation_spins
+)
 
 
 def generate_TD_waveform(parameters_lal: Tuple) -> PolarizationDict:
@@ -166,6 +169,189 @@ def generate_FD_waveform(
     h_cross *= time_shift
     pol_dict = PolarizationDict(h_plus=h_plus, h_cross=h_cross)
     return pol_dict
+
+
+LalTargetFunction = Literal[
+    "SimInspiralFD", "SimInspiralTD",
+    "SimInspiralChooseFDModes", "SimInspiralChooseTDModes",
+    "SimIMRPhenomXPCalculateModelParametersFromSourceFrame"
+]
+
+
+def _convert_parameters(
+    domain: FrequencyDomain,
+    parameter_dict: BlackHoleParameters,
+    lal_params=None,
+    lal_target_function: Optional[LalTargetFunction] = None,
+    spin_conversion_phase: Optional[float] = None,
+
+) -> Tuple:
+    """Convert to lal source frame parameters
+
+    Parameters
+    ----------
+    parameter_dict : Dict
+        A dictionary of parameter names and 1-dimensional prior distribution
+        objects. If None, we use a default binary black hole prior.
+    lal_params : (None, or Swig Object of type 'tagLALDict *')
+        Extra parameters which can be passed to lalsimulation calls.
+    lal_target_function: str = None
+        Name of the lalsimulation function for which to prepare the parameters.
+        If None, use SimInspiralFD if self.domain is FD, and SimInspiralTD if
+        self.domain is TD.
+        Choices:
+            - SimInspiralFD (Also works for SimInspiralChooseFDWaveform)
+            - SimInspiralTD (Also works for SimInspiralChooseTDWaveform)
+            - SimInspiralChooseFDModes
+            - SimInspiralChooseTDModes
+            - SimIMRPhenomXPCalculateModelParametersFromSourceFrame
+    Returns
+    -------
+    lal_parameter_tuple:
+        A tuple of parameters for the lalsimulation waveform generator
+    """
+
+    if not isinstance(domain, FrequencyDomain):
+        raise ValueError(
+            f"Unsupported domain type {type(domain)}.")
+
+    # check that the lal_target_function is valid
+    if lal_target_function is None:
+        lal_target_function = "SimInspiralFD"
+
+    # note: for TimeDomain (not supported yet), lal_target_function
+    # would be "SimInspiralTD"
+
+    if lal_target_function not in [
+        "SimInspiralFD",
+        "SimInspiralTD",
+        "SimInspiralChooseTDModes",
+        "SimInspiralChooseFDModes",
+        "SimIMRPhenomXPCalculateModelParametersFromSourceFrame",
+    ]:
+        raise ValueError(
+            f"Unsupported lalsimulation waveform function {lal_target_function}."
+        )
+
+    # Transform mass, spin, and distance parameters
+    p: LaLBlackHoleParameters
+    p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
+
+    lal_spins: LaLSimulationSpins = to_lal_simulation_spins(
+        p, spin_conversion_phase
+    )
+
+    # Construct argument list for FD and TD lal waveform generator wrappers
+    spins_cartesian = s1x, s1y, s1z, s2x, s2y, s2z
+    masses = (p["mass_1"], p["mass_2"])
+    r = p["luminosity_distance"]
+    phase = p["phase"]
+    ecc_params = (0.0, 0.0, 0.0)  # longAscNodes, eccentricity, meanPerAno
+
+    # Get domain parameters
+    f_ref = p["f_ref"]
+    if isinstance(self.domain, FrequencyDomain):
+        delta_f = self.domain.delta_f
+        f_max = self.domain.f_max
+        if self.f_start is not None:
+            f_min = self.f_start
+        else:
+            f_min = self.domain.f_min
+        # parameters needed for TD waveforms
+        delta_t = 0.5 / self.domain.f_max
+    elif isinstance(self.domain, TimeDomain):
+        raise NotImplementedError("Time domain not supported yet.")
+        # FIXME: compute f_min from duration or specify it if SimInspiralTD
+        #  is used for a native FD waveform
+        f_min = 20.0
+        delta_t = self.domain.delta_t
+        # parameters needed for FD waveforms
+        f_max = 1.0 / self.domain.delta_t
+        delta_f = 1.0 / self.domain.duration
+    else:
+        raise ValueError(f"Unsupported domain type {type(self.domain)}.")
+
+    if lal_target_function == "SimInspiralFD":
+        # LS.SimInspiralFD takes parameters:
+        #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
+        #   distance, inclination, phiRef,
+        #   longAscNodes, eccentricity, meanPerAno,
+        #   deltaF, f_min, f_max, f_ref,
+        #   lal_params, approximant
+        domain_pars = (delta_f, f_min, f_max, f_ref)
+        domain_pars = tuple(float(p) for p in domain_pars)
+        lal_parameter_tuple = (
+            masses
+            + spins_cartesian
+            + (r, iota, phase)
+            + ecc_params
+            + domain_pars
+            + (lal_params, self.approximant)
+        )
+
+    elif lal_target_function == "SimInspiralTD":
+        # LS.SimInspiralTD takes parameters:
+        #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
+        #   distance, inclination, phiRef,
+        #   longAscNodes, eccentricity, meanPerAno,
+        #   delta_t, f_min, f_ref
+        #   lal_params, approximant
+        domain_pars = (delta_t, f_min, f_ref)
+        domain_pars = tuple(float(p) for p in domain_pars)
+        lal_parameter_tuple = (
+            masses
+            + spins_cartesian
+            + (r, iota, phase)
+            + ecc_params
+            + domain_pars
+            + (lal_params, self.approximant)
+        )
+    elif lal_target_function == "SimInspiralChooseFDModes":
+        domain_pars = (delta_f, f_min, f_max, f_ref)
+        domain_pars = tuple(float(p) for p in domain_pars)
+        lal_parameter_tuple = (
+            masses
+            + spins_cartesian
+            + domain_pars
+            + (phase, r, iota)
+            + (lal_params, self.approximant)
+        )
+
+    elif (
+        lal_target_function
+        == "SimIMRPhenomXPCalculateModelParametersFromSourceFrame"
+    ):
+        lal_parameter_tuple = (
+            masses + (f_ref,) + (phase, iota) +
+            spins_cartesian + (lal_params,)
+        )
+
+    elif lal_target_function == "SimInspiralChooseTDModes":
+        # LS.SimInspiralChooseTDModes takes parameters:
+        #   phiRef=0 (for lal legacy reasons), delta_t,
+        #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
+        #   f_min, f_ref
+        #   distance,
+        #   lal_params, l_max, approximant
+        domain_pars = (delta_t, f_min, f_ref)
+        domain_pars = tuple(float(p) for p in domain_pars)
+        if "l_max" not in parameter_dict:
+            l_max = 5  # hard code l_max for now
+        lal_parameter_tuple = (
+            (
+                0.0,
+                domain_pars[0],
+            )  # domain_pars[0] = delta_t
+            + masses
+            + spins_cartesian
+            + domain_pars[1:]  # domain_pars[1:] = f_min, f_ref
+            + (r,)
+            + (lal_params, l_max, self.approximant)
+        )
+        # also pass iota, since this is needed for recombination of the modes
+        lal_parameter_tuple = (lal_parameter_tuple, iota)
+
+    return lal_parameter_tuple
 
 
 class Transform(Protocol):
@@ -374,222 +560,6 @@ class WaveformGenerator:
             return self.transform(wf_dict)
         else:
             return wf_dict
-
-    def _convert_to_scalar(self, x: Union[np.ndarray, float]) -> Number:
-        """
-        Convert a single element array to a number.
-
-        Parameters
-        ----------
-        x:
-            Array or number
-
-        Returns
-        -------
-        A number
-        """
-        if isinstance(x, np.ndarray):
-            if x.shape == () or x.shape == (1,):
-                return x.item()
-            else:
-                raise ValueError(
-                    f"Expected an array of length one, but shape = {x.shape}"
-                )
-        else:
-            return x
-
-    def _convert_parameters(
-        self,
-        parameter_dict: Dict,
-        lal_params=None,
-        lal_target_function=None,
-    ) -> Tuple:
-        """Convert to lal source frame parameters
-
-        Parameters
-        ----------
-        parameter_dict : Dict
-            A dictionary of parameter names and 1-dimensional prior distribution
-            objects. If None, we use a default binary black hole prior.
-        lal_params : (None, or Swig Object of type 'tagLALDict *')
-            Extra parameters which can be passed to lalsimulation calls.
-        lal_target_function: str = None
-            Name of the lalsimulation function for which to prepare the parameters.
-            If None, use SimInspiralFD if self.domain is FD, and SimInspiralTD if
-            self.domain is TD.
-            Choices:
-                - SimInspiralFD (Also works for SimInspiralChooseFDWaveform)
-                - SimInspiralTD (Also works for SimInspiralChooseTDWaveform)
-                - SimInspiralChooseFDModes
-                - SimInspiralChooseTDModes
-        Returns
-        -------
-        lal_parameter_tuple:
-            A tuple of parameters for the lalsimulation waveform generator
-        """
-        # check that the lal_target_function is valid
-        if lal_target_function is None:
-            if isinstance(self.domain, FrequencyDomain):
-                lal_target_function = "SimInspiralFD"
-            elif isinstance(self.domain, TimeDomain):
-                lal_target_function = "SimInspiralTD"
-            else:
-                raise ValueError(
-                    f"Unsupported domain type {type(self.domain)}.")
-        if lal_target_function not in [
-            "SimInspiralFD",
-            "SimInspiralTD",
-            "SimInspiralChooseTDModes",
-            "SimInspiralChooseFDModes",
-            "SimIMRPhenomXPCalculateModelParametersFromSourceFrame",
-        ]:
-            raise ValueError(
-                f"Unsupported lalsimulation waveform function {lal_target_function}."
-            )
-
-        # Transform mass, spin, and distance parameters
-        p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
-
-        # Convert to SI units
-        p["mass_1"] *= lal.MSUN_SI
-        p["mass_2"] *= lal.MSUN_SI
-        p["luminosity_distance"] *= 1e6 * lal.PC_SI
-
-        # Transform to lal source frame: iota and Cartesian spin components
-        param_keys_in = (
-            "theta_jn",
-            "phi_jl",
-            "tilt_1",
-            "tilt_2",
-            "phi_12",
-            "a_1",
-            "a_2",
-            "mass_1",
-            "mass_2",
-            "f_ref",
-            "phase",
-        )
-        param_values_in = [p[k] for k in param_keys_in]
-        # if spin_conversion_phase is set, use this as fixed phiRef when computing the
-        # cartesian spins instead of using the phase parameter
-        if self.spin_conversion_phase is not None:
-            param_values_in[-1] = self.spin_conversion_phase
-        iota_and_cart_spins = bilby_to_lalsimulation_spins(*param_values_in)
-        iota, s1x, s1y, s1z, s2x, s2y, s2z = [
-            float(self._convert_to_scalar(x)) for x in iota_and_cart_spins
-        ]
-
-        # Construct argument list for FD and TD lal waveform generator wrappers
-        spins_cartesian = s1x, s1y, s1z, s2x, s2y, s2z
-        masses = (p["mass_1"], p["mass_2"])
-        r = p["luminosity_distance"]
-        phase = p["phase"]
-        ecc_params = (0.0, 0.0, 0.0)  # longAscNodes, eccentricity, meanPerAno
-
-        # Get domain parameters
-        f_ref = p["f_ref"]
-        if isinstance(self.domain, FrequencyDomain):
-            delta_f = self.domain.delta_f
-            f_max = self.domain.f_max
-            if self.f_start is not None:
-                f_min = self.f_start
-            else:
-                f_min = self.domain.f_min
-            # parameters needed for TD waveforms
-            delta_t = 0.5 / self.domain.f_max
-        elif isinstance(self.domain, TimeDomain):
-            raise NotImplementedError("Time domain not supported yet.")
-            # FIXME: compute f_min from duration or specify it if SimInspiralTD
-            #  is used for a native FD waveform
-            f_min = 20.0
-            delta_t = self.domain.delta_t
-            # parameters needed for FD waveforms
-            f_max = 1.0 / self.domain.delta_t
-            delta_f = 1.0 / self.domain.duration
-        else:
-            raise ValueError(f"Unsupported domain type {type(self.domain)}.")
-
-        if lal_target_function == "SimInspiralFD":
-            # LS.SimInspiralFD takes parameters:
-            #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
-            #   distance, inclination, phiRef,
-            #   longAscNodes, eccentricity, meanPerAno,
-            #   deltaF, f_min, f_max, f_ref,
-            #   lal_params, approximant
-            domain_pars = (delta_f, f_min, f_max, f_ref)
-            domain_pars = tuple(float(p) for p in domain_pars)
-            lal_parameter_tuple = (
-                masses
-                + spins_cartesian
-                + (r, iota, phase)
-                + ecc_params
-                + domain_pars
-                + (lal_params, self.approximant)
-            )
-
-        elif lal_target_function == "SimInspiralTD":
-            # LS.SimInspiralTD takes parameters:
-            #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
-            #   distance, inclination, phiRef,
-            #   longAscNodes, eccentricity, meanPerAno,
-            #   delta_t, f_min, f_ref
-            #   lal_params, approximant
-            domain_pars = (delta_t, f_min, f_ref)
-            domain_pars = tuple(float(p) for p in domain_pars)
-            lal_parameter_tuple = (
-                masses
-                + spins_cartesian
-                + (r, iota, phase)
-                + ecc_params
-                + domain_pars
-                + (lal_params, self.approximant)
-            )
-        elif lal_target_function == "SimInspiralChooseFDModes":
-            domain_pars = (delta_f, f_min, f_max, f_ref)
-            domain_pars = tuple(float(p) for p in domain_pars)
-            lal_parameter_tuple = (
-                masses
-                + spins_cartesian
-                + domain_pars
-                + (phase, r, iota)
-                + (lal_params, self.approximant)
-            )
-
-        elif (
-            lal_target_function
-            == "SimIMRPhenomXPCalculateModelParametersFromSourceFrame"
-        ):
-            lal_parameter_tuple = (
-                masses + (f_ref,) + (phase, iota) +
-                spins_cartesian + (lal_params,)
-            )
-
-        elif lal_target_function == "SimInspiralChooseTDModes":
-            # LS.SimInspiralChooseTDModes takes parameters:
-            #   phiRef=0 (for lal legacy reasons), delta_t,
-            #   m1, m2, S1x, S1y, S1z, S2x, S2y, S2z,
-            #   f_min, f_ref
-            #   distance,
-            #   lal_params, l_max, approximant
-            domain_pars = (delta_t, f_min, f_ref)
-            domain_pars = tuple(float(p) for p in domain_pars)
-            if "l_max" not in parameter_dict:
-                l_max = 5  # hard code l_max for now
-            lal_parameter_tuple = (
-                (
-                    0.0,
-                    domain_pars[0],
-                )  # domain_pars[0] = delta_t
-                + masses
-                + spins_cartesian
-                + domain_pars[1:]  # domain_pars[1:] = f_min, f_ref
-                + (r,)
-                + (lal_params, l_max, self.approximant)
-            )
-            # also pass iota, since this is needed for recombination of the modes
-            lal_parameter_tuple = (lal_parameter_tuple, iota)
-
-        return lal_parameter_tuple
 
     def generate_hplus_hcross_m(
         self, parameters: Dict[str, float]
