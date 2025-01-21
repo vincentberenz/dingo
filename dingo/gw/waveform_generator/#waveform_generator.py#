@@ -242,6 +242,8 @@ def _convert_parameters(
         p, spin_conversion_phase
     )
 
+
+    
     # Construct argument list for FD and TD lal waveform generator wrappers
     spins_cartesian = s1x, s1y, s1z, s2x, s2y, s2z
     masses = (p["mass_1"], p["mass_2"])
@@ -279,6 +281,7 @@ def _convert_parameters(
         #   longAscNodes, eccentricity, meanPerAno,
         #   deltaF, f_min, f_max, f_ref,
         #   lal_params, approximant
+        
         domain_pars = (delta_f, f_min, f_max, f_ref)
         domain_pars = tuple(float(p) for p in domain_pars)
         lal_parameter_tuple = (

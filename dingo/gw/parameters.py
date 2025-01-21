@@ -1,3 +1,4 @@
+from typing import Any
 import numpy as np
 from typing import TypedDict, Optional, Union
 from numbers import Number
@@ -185,24 +186,26 @@ def check_consistency(parameters: BlackHoleParameters) -> Optional[str]:
     return None
 
 
-class SimInspiralFDArgs:
-    phase: Union[float, int]
-    mass_1: Union[float, int]
-    mass_2: Union[float, int]
-    spin_1x: Union[float, int]
-    spin_1y: Union[float, int]
-    spin_1z: Union[float, int]
-    spin_2x: Union[float, int]
-    spin_2y: Union[float, int]
-    spin_2z: Union[float, int]
-    reference_frequency: Union[float, int]
-    luminosity_distance: Union[float, int]
-    iota: Union[float, int]
-    longitude_ascending_nodes: Union[float, int]
-    eccentricity: Union[float, int]
-    mean_per_ano: Union[float, int]
-    delta_frequency: Union[float, int]
-    minimum_frequency: Union[float, int]
-    maximum_frequency: Union[float, int]
-    waveform_dictionary: Optional[lal.Dict]
-    approximant: Optional[int, str]
+class SimInspiralFDArgs(TypedDict, total=False):
+    # https://lscsoft.docs.ligo.org/lalsuite/lalsimulation/
+    # group___l_a_l_sim_inspiral__c.html#ga4e21f4a33fc0238ebd38793ae2bb8745
+    m1: float
+    m2: float
+    S1x: float
+    S1y: float
+    S1z: float
+    S2x: float
+    S2y: float
+    S2z: float
+    distance: float
+    inclination: float
+    PhiRef: float
+    longAsNodes: float
+    eccentricity: float
+    meanPerAno: float
+    deltaF: float
+    f_min: float
+    f_max: float
+    f_ref: float
+    lal_params: Optional[Any]  # todo: not Any. LaLBlackHoleParameters ?
+    approximant: int
