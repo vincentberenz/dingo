@@ -3,6 +3,7 @@ import copy
 import textwrap
 from dataclasses import dataclass
 from multiprocessing import Pool
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
@@ -292,16 +293,28 @@ def parse_args():
     )
     return parser.parse_args()
 
+def _main(settings_file: str, out_file: str, num_processes: int)->None:
+
+    if not Path(settings_file).is_file():
+        raise FileNotFoundError(f"{settings_file} not found")
+
+    if not Path(out_file).parent.is_dir():
+        raise FileNotFoundError(
+            f"can not write file {out_file}: "
+            "directory {Path(out_file).parent} not found"
+        )
+
+    # Load settings
+    with open(settings_file, "r") as f:
+        settings = yaml.safe_load(f)
+
+    dataset = generate_dataset(settings, num_processes)
+    dataset.to_file(out_file)
+
 
 def main():
     args = parse_args()
-
-    # Load settings
-    with open(args.settings_file, "r") as f:
-        settings = yaml.safe_load(f)
-
-    dataset = generate_dataset(settings, args.num_processes)
-    dataset.to_file(args.out_file)
+    _main(args.settings_file, args.out_file, args.num_processes)
 
 
 if __name__ == "__main__":
