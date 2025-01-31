@@ -1,16 +1,11 @@
 import json
-from typing import Optional
-from copy import copy
-from copy import deepcopy
-from typing import Protocol
-from typing import NewType
-from dataclasses import dataclass, asdict
-from typing import TypedDict, Literal
-import numpy as np
+from copy import copy, deepcopy
+from dataclasses import asdict, dataclass
+from typing import Literal, NewType, Optional, Protocol, TypedDict
 
 import lal
 import lalsimulation as LS
-
+import numpy as np
 
 Approximant = Literal[
     "TaylorT1", "TaylorT2", "TaylorT3", "TaylorF1",
@@ -190,7 +185,7 @@ class NumericalInstability(Exception):
 
 
 def _sim_inspiral(sim_inspiral_params: SimInspiral, fn: SimInspiralFunction) -> Polarization:
-    params = _dataclass_to_list(sim_inspiral_params)
+    params: list = _dataclass_to_list(sim_inspiral_params)
     params[-1] = LS.GetApproximantFromString(params[-1])
     hp, hc = fn(params)
     return Polarization(
@@ -237,4 +232,4 @@ def sim_inspiral_FD(
                 "fixed it"
             )
 
-        return polarization
+    return polarization
