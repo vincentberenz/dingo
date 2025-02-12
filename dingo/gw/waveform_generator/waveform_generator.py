@@ -1,23 +1,22 @@
-from functools import partial
-from multiprocessing import Pool
-from math import isclose
-
-import numpy as np
-import astropy.units as u
-from typing import Dict, List, Tuple, Union
-from numbers import Number
 import warnings
-import pandas as pd
+from functools import partial
+from math import isclose
+from multiprocessing import Pool
+from numbers import Number
+from typing import Dict, List, Tuple, Union
 
+import astropy.units as u
 import lal
 import lalsimulation as LS
-
+import numpy as np
+import pandas as pd
 from bilby.gw.conversion import (
-    convert_to_lal_binary_black_hole_parameters,
     bilby_to_lalsimulation_spins,
+    convert_to_lal_binary_black_hole_parameters,
 )
-import dingo.gw.waveform_generator.wfg_utils as wfg_utils
+
 import dingo.gw.waveform_generator.frame_utils as frame_utils
+import dingo.gw.waveform_generator.wfg_utils as wfg_utils
 from dingo.gw.domains import Domain, FrequencyDomain, TimeDomain
 
 
@@ -276,12 +275,30 @@ class WaveformGenerator:
             )
 
         # Transform mass, spin, and distance parameters
+        print()
+        print("parameter dict (before black hole)")
+        for k, v in parameter_dict.items():
+            print(k, "\t", v, "\t", type(v))
+        print()
+
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
+
+        print()
+        print("parameter dict (after black hole)")
+        for k, v in p.items():
+            print(k, "\t", v, "\t", type(v))
+        print()
 
         # Convert to SI units
         p["mass_1"] *= lal.MSUN_SI
         p["mass_2"] *= lal.MSUN_SI
         p["luminosity_distance"] *= 1e6 * lal.PC_SI
+
+        print()
+        print("parameter dict (after SI units conversion)")
+        for k, v in p.items():
+            print(k, "\t", v, "\t", type(v))
+        print()
 
         # Transform to lal source frame: iota and Cartesian spin components
         param_keys_in = (
@@ -336,6 +353,8 @@ class WaveformGenerator:
             delta_f = 1.0 / self.domain.duration
         else:
             raise ValueError(f"Unsupported domain type {type(self.domain)}.")
+
+        print("\nlal target function", lal_target_function, "\n")
 
         if lal_target_function == "SimInspiralFD":
             # LS.SimInspiralFD takes parameters:
@@ -415,6 +434,14 @@ class WaveformGenerator:
             )
             # also pass iota, since this is needed for recombination of the modes
             lal_parameter_tuple = (lal_parameter_tuple, iota)
+
+        print()
+        print("lal parameter tuple")
+        for lp in lal_parameter_tuple:
+            print(lp, "\t", type(lp))
+        print()
+
+        raise Exception("")
 
         return lal_parameter_tuple
 
@@ -1372,8 +1399,9 @@ def sum_contributions_m(x_m, phase_shift=0.0):
 
 
 if __name__ == "__main__":
-    import pandas as pd
     import numpy as np
+    import pandas as pd
+
     from dingo.gw.domains import build_domain
     from dingo.gw.prior import build_prior_with_defaults
 
