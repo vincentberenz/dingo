@@ -1,23 +1,46 @@
 from dataclasses import asdict, dataclass
 from numbers import Number
-from typing import Any, List, Optional, Tuple, TypedDict, Union
+from typing import Any, List, Optional, Tuple, TypeAlias, TypedDict, Union
 
 import lal
+import lalsimulation as LS
 import numpy as np
 from bilby.gw.conversion import (
     bilby_to_lalsimulation_spins,
     convert_to_lal_binary_black_hole_parameters,
 )
 
+from dingo.gw.domains import Domain, DomainParameters
 
-def _convert_to_scalar(x: Union[np.ndarray, float]) -> Union[Number | float]:
+Approximant: TypeAlias = int
+
+
+def get_approximant(approximant: str) -> Approximant:
+    return Approximant(LS.GetApproximantFromString(approximant))
+
+
+ModeList: TypeAlias = List[Tuple[int, int]]
+
+LalParams: TypeAlias = lal.Dict
+
+
+def get_lal_params(mode_list: ModeList) -> LalParams:
+    lal_params = lal.CreateDict()
+    ma = LS.SimInspiralCreateModeArray()
+    for ell, m in mode_list:
+        LS.SimInspiralModeArrayActivateMode(ma, ell, m)
+    LS.SimInspiralWaveformParamsInsertModeArray(lal_params, ma)
+    return lal_params
+
+
+def _convert_to_float(x: Union[np.ndarray, Number, float]) -> float:
     """
     Convert a single element array to a number.
 
     Parameters
     ----------
     x:
-        Array or number
+        Array or float
 
     Returns
     -------
@@ -25,13 +48,13 @@ def _convert_to_scalar(x: Union[np.ndarray, float]) -> Union[Number | float]:
     """
     if isinstance(x, np.ndarray):
         if x.shape == () or x.shape == (1,):
-            return x.item()
+            return float(x.item())
         else:
             raise ValueError(
                 f"Expected an array of length one, but go shape = {x.shape}"
             )
     else:
-        return x
+        return float(x)
 
 
 @dataclass
@@ -61,15 +84,15 @@ class SimInspiralChooseFDModesParameters:
     s2x: float
     s2y: float
     s2z: float
-    longAscNodes: float
-    eccentricity: float
-    meanPerAno: float
     delta_f: float
     f_min: float
     f_max: float
     f_ref: float
-    lal_params: List[Any]
-    approximant: Any
+    phase: float
+    r: float
+    iota: float
+    lal_params: Optional[LalParams]
+    approximant: Approximant
 
 
 @dataclass
@@ -122,10 +145,33 @@ class LalBinaryBlackHoleParameters:
         if spin_conversion_phase is not None:
             args[-1] = spin_conversion_phase
         iota_and_cart_spins: List[float] = [
-            float(_convert_to_scalar(value))
+            float(_convert_to_float(value))
             for value in bilby_to_lalsimulation_spins(args)
         ]
         return LaLSimulationSpins(*iota_and_cart_spins)
+
+    def get_SimInspiralChooseFDModes_parameters(
+        self,
+        domain: Domain,
+        spin_conversion_phase: Optional[float],
+        lal_params: Optional[LalParams],
+        approximant: Optional[Approximant],
+    ) -> SimInspiralChooseFDModesParameters:
+        spins: LaLSimulationSpins = self.get_lal_simulation_spins(spin_conversion_phase)
+        domain_params = asdict(domain.get_parameters())
+        # adding iota, s1x, ..., s2x, ...
+        parameters = asdict(spins)
+        # direct mapping from this instance
+        for k in ("mass_1", "mass_2", "phase"):
+            parameters[k] = getattr(self, k)
+        # adding domain related params
+        for k in ("delta_t", "f_min", "f_max", "f_ref"):
+            parameters[k] = domain_params[k]
+        # other params
+        parameters["r"] = self.luminosity_distance
+        parameters["lal_params"] = lal_params
+        parameters["approximant"] = approximant
+        return SimInspiralChooseFDModesParameters(**parameters)
 
 
 @dataclass

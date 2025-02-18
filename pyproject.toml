@@ -35,6 +35,7 @@ dependencies = [
     "h5py",
     "lalsuite>=7.15",
     "matplotlib",
+    "multipledispatch",
     "numpy",
     "pandas",
     "pesummary",

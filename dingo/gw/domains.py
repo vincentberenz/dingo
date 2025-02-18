@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import cached_property, lru_cache
+from functools import cached_property, lru_cache, wraps
 from typing import Optional
 
 import numpy as np
@@ -8,9 +8,8 @@ import torch
 from multipledispatch import dispatch
 from typing_extensions import override
 
-# from dingo.gw.gwutils import *
 
-
+@dataclass
 class DomainParameters:
     delta_f: float
     f_min: float

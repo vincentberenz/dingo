@@ -275,30 +275,13 @@ class WaveformGenerator:
             )
 
         # Transform mass, spin, and distance parameters
-        print()
-        print("parameter dict (before black hole)")
-        for k, v in parameter_dict.items():
-            print(k, "\t", v, "\t", type(v))
-        print()
 
         p, _ = convert_to_lal_binary_black_hole_parameters(parameter_dict)
-
-        print()
-        print("parameter dict (after black hole)")
-        for k, v in p.items():
-            print(k, "\t", v, "\t", type(v))
-        print()
 
         # Convert to SI units
         p["mass_1"] *= lal.MSUN_SI
         p["mass_2"] *= lal.MSUN_SI
         p["luminosity_distance"] *= 1e6 * lal.PC_SI
-
-        print()
-        print("parameter dict (after SI units conversion)")
-        for k, v in p.items():
-            print(k, "\t", v, "\t", type(v))
-        print()
 
         # Transform to lal source frame: iota and Cartesian spin components
         param_keys_in = (
