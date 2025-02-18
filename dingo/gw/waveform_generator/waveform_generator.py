@@ -424,8 +424,6 @@ class WaveformGenerator:
             print(lp, "\t", type(lp))
         print()
 
-        raise Exception("")
-
         return lal_parameter_tuple
 
     def setup_mode_array(self, mode_list: List[Tuple]) -> lal.Dict:
@@ -621,6 +619,11 @@ class WaveformGenerator:
             if LS.SimInspiralImplementedFDApproximants(self.approximant):
                 # Step 1: generate waveform modes in L0 frame in native domain of
                 # approximant (here: FD)
+
+                print()
+                print("generate_hplus_hcross_m")
+                print()
+
                 hlm_fd, iota = self.generate_FD_modes_LO(parameters)
 
                 # Step 2: Transform modes to target domain.
@@ -668,18 +671,52 @@ class WaveformGenerator:
             values.
         iota: float
         """
+
+        print()
+        print("generate FD modes lo")
+        print(self.approximant)
+        print()
+
         # TD approximants that are implemented in J frame. Currently tested for:
         #   101: IMRPhenomXPHM
         if self.approximant in [101]:
+
+            print("A ?")
+
             parameters_lal_fd_modes = self._convert_parameters(
                 {**parameters, "f_ref": self.f_ref},
                 lal_target_function="SimInspiralChooseFDModes",
             )
             iota = parameters_lal_fd_modes[14]
             hlm_fd = LS.SimInspiralChooseFDModes(*parameters_lal_fd_modes)
+
+            print()
+            print(type(hlm_fd))
+            print()
+
+            # raise RuntimeError()
+
             # unpack linked list, convert lal objects to arrays
             hlm_fd = wfg_utils.linked_list_modes_to_dict_modes(hlm_fd)
+
+            print("\nA")
+            print(type(hlm_fd))
+            keys_ = list(hlm_fd.keys())
+            print(keys_)
+            value_ = hlm_fd[keys_[0]]
+            print(type(value_), value_.shape, value_.dtype)
+            print()
+
             hlm_fd = {k: v.data.data for k, v in hlm_fd.items()}
+
+            print("\nB")
+            print(type(hlm_fd))
+            keys_ = list(hlm_fd.keys())
+            print(keys_)
+            value_ = hlm_fd[keys_[0]]
+            print(type(value_), value_.shape, value_.dtype)
+            print()
+
             # For the waveform models considered here (e.g., IMRPhenomXPHM), the modes
             # are returned in the J frame (where the observer is at inclination=theta_JN,
             # azimuth=0). In this frame, the dependence on the reference phase enters
@@ -691,6 +728,17 @@ class WaveformGenerator:
                 self,
                 spin_conversion_phase=self.spin_conversion_phase,
             )
+
+            print()
+            print(type(hlm_fd))
+            keys_ = list(hlm_fd.keys())
+            print(keys_)
+            value_ = hlm_fd[keys_[0]]
+            print(type(value_), value_.shape, value_.dtype)
+            print()
+
+            raise RuntimeError()
+
             return hlm_fd, iota
         else:
             raise NotImplementedError(
